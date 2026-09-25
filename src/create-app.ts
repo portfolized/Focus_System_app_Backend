@@ -3,7 +3,7 @@ import cors, { type CorsOptions } from "cors";
 import express, { type Express } from "express";
 import helmetImport, { type HelmetOptions } from "helmet";
 import morgan from "morgan";
-import { config } from "./config.js";
+import { config, configProblems } from "./config.js";
 import { errorHandler, notFound } from "./lib/http.js";
 import { authRouter } from "./routes/auth.js";
 import { bootstrapRouter, focusRouter, settingsRouter } from "./routes/focus.js";
@@ -45,6 +45,14 @@ export function configureApp(app: Express) {
   app.use(express.json({ limit: "5mb" }));
   app.use(cookieParser());
   if (!config.isProd) app.use(morgan("dev"));
+
+  // Misconfigured deployment: say what is wrong instead of failing every request opaquely.
+  if (configProblems.length) {
+    app.use((_req, res) => {
+      res.status(500).json({ error: "Server is misconfigured", problems: configProblems });
+    });
+    return app;
+  }
 
   app.get("/", (_req, res) => {
     res.json({ name: "Focus System API", docs: "See README.md", health: "/api/health" });

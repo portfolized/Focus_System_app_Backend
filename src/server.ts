@@ -1,5 +1,5 @@
 import express from "express";
-import { config } from "./config.js";
+import { config, configProblems } from "./config.js";
 import { configureApp } from "./create-app.js";
 import { prisma } from "./lib/db.js";
 
@@ -9,6 +9,10 @@ const app = configureApp(express());
 // On Vercel the exported app is served as a Vercel Function (no listen needed).
 // Locally (npm run dev / npm start) we start a normal HTTP server.
 if (!process.env.VERCEL) {
+  if (configProblems.length) {
+    console.error("Fix backend/.env and restart.");
+    process.exit(1);
+  }
   const server = app.listen(config.port, config.host, () => {
     console.log(`Focus System API listening on http://localhost:${config.port}`);
     console.log(`  phones on your Wi-Fi: http://<this computer's IP>:${config.port}`);
