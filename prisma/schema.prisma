@@ -1,0 +1,137 @@
+// Focus System — the one database behind the website and the Flutter app.
+// Hosted on Neon (PostgreSQL). DATABASE_URL = pooled connection (runtime),
+// DIRECT_URL = direct connection (migrations).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  // Bumped on password change / "log out everywhere" to invalidate old tokens.
+  tokenVersion Int      @default(0)
+  timezone     String   @default("UTC")
+  xp           Int      @default(0)
+
+  // Focus timer settings (minutes)
+  pomoWork         Int     @default(25)
+  pomoShortBreak   Int     @default(5)
+  pomoLongBreak    Int     @default(15)
+  pomoLongInterval Int     @default(4)
+  // Focus audio
+  youtubeUrl       String  @default("")
+  alarmEnabled     Boolean @default(true)
+  // Minutes before a task's start time to send a reminder (mobile). -1 = off
+  reminderMinutes  Int     @default(10)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  goals      Goal[]
+  tasks      Task[]
+  pomoLogs   PomoLog[]
+  streakDays StreakDay[]
+  focusState FocusState?
+}
+
+model Goal {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String
+  color     String   @default("#6366F1")
+  icon      String   @default("target")
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks Task[]
+
+  @@index([userId])
+}
+
+model Task {
+  id            String    @id @default(cuid())
+  userId        String
+  goalId        String?
+  title         String
+  description   String    @default("")
+  completed     Boolean   @default(false)
+  completedAt   DateTime?
+  dueDate       String // YYYY-MM-DD in the user's local calendar
+  startTime     String? // HH:mm
+  endTime       String? // HH:mm
+  eisenhower    String? // do-first | schedule | delegate | eliminate
+  isPriority    Boolean   @default(false) // "Eat the frog"
+  pomodoroCount Int       @default(0)
+  xpAwarded     Int       @default(0) // XP granted for completing; refunded if un-completed
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  goal     Goal?     @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  subtasks Subtask[]
+
+  @@index([userId, dueDate])
+}
+
+model Subtask {
+  id        String   @id @default(cuid())
+  taskId    String
+  title     String
+  completed Boolean  @default(false)
+  sortOrder Int      @default(0)
+  xpAwarded Int      @default(0)
+  createdAt DateTime @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+}
+
+model PomoLog {
+  id       String  @id @default(cuid())
+  userId   String
+  date     String // YYYY-MM-DD
+  taskId   String?
+  sessions Int     @default(1)
+  minutes  Int     @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+}
+
+model StreakDay {
+  userId String
+  date   String // YYYY-MM-DD
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, date])
+}
+
+// One running/paused focus timer per user, shared by every device.
+model FocusState {
+  userId         String    @id
+  mode           String    @default("work") // work | shortBreak | longBreak
+  running        Boolean   @default(false)
+  endsAt         DateTime? // when running: absolute end of the current phase
+  secondsLeft    Int       @default(1500) // when paused
+  totalSeconds   Int       @default(1500)
+  sessionCount   Int       @default(0)
+  attachedTaskId String?
+  version        Int       @default(0)
+  updatedAt      DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
