@@ -1,7 +1,7 @@
 import cookieParser from "cookie-parser";
 import cors, { type CorsOptions } from "cors";
 import express, { type Express } from "express";
-import helmet from "helmet";
+import helmetImport, { type HelmetOptions } from "helmet";
 import morgan from "morgan";
 import { config } from "./config.js";
 import { errorHandler, notFound } from "./lib/http.js";
@@ -10,6 +10,13 @@ import { bootstrapRouter, focusRouter, settingsRouter } from "./routes/focus.js"
 import { goalsRouter } from "./routes/goals.js";
 import { importRouter } from "./routes/import.js";
 import { tasksRouter } from "./routes/tasks.js";
+
+// helmet ships CommonJS types. Depending on how the compiler resolves them (Vercel's build differs from
+// our tsconfig), the default import is typed as either the function or the module object, so unwrap it.
+// At runtime both shapes expose the function as `.default`.
+type HelmetFn = (options?: Readonly<HelmetOptions>) => express.RequestHandler;
+const helmet = ((helmetImport as unknown as { default?: HelmetFn }).default ??
+  (helmetImport as unknown as HelmetFn)) as HelmetFn;
 
 /** Registers middleware, routes and the error handler on an Express app. */
 export function configureApp(app: Express) {
