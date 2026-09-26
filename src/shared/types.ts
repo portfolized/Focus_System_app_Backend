@@ -17,7 +17,8 @@ export interface TaskDTO {
   description: string;
   completed: boolean;
   completedAt: string | null;
-  dueDate: string;
+  /** YYYY-MM-DD, or null while the task waits in its goal's queue. */
+  dueDate: string | null;
   startTime: string | null;
   endTime: string | null;
   eisenhower: Eisenhower | null;
@@ -36,6 +37,14 @@ export interface GoalDTO {
   sortOrder: number;
 }
 
+/** A break reward the user added in Settings. "short" = quick treat, "long" = bigger treat. */
+export interface BreakIdea {
+  id: string;
+  title: string;
+  emoji: string;
+  length: "short" | "long";
+}
+
 export interface UserSettings {
   pomoWork: number;
   pomoShortBreak: number;
@@ -44,6 +53,7 @@ export interface UserSettings {
   youtubeUrl: string;
   alarmEnabled: boolean;
   reminderMinutes: number;
+  customBreaks: BreakIdea[];
 }
 
 export interface UserDTO {
@@ -74,6 +84,8 @@ export interface FocusDTO {
   totalSeconds: number;
   sessionCount: number;
   attachedTaskId: string | null;
+  /** The reward picked for the current break. */
+  breakActivity: string | null;
   version: number;
 }
 

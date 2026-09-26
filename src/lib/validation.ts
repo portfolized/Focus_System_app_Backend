@@ -33,7 +33,8 @@ export const taskCreateSchema = z.object({
   title: z.string().trim().min(1, "is required").max(300),
   description: z.string().max(5000).optional().default(""),
   goalId: z.string().nullable().optional().default(null),
-  dueDate: date.optional(),
+  // Omitted = today; null = the goal's queue (no date yet).
+  dueDate: date.nullable().optional(),
   startTime: time.optional().default(null),
   endTime: time.optional().default(null),
   eisenhower: eisenhowerSchema.optional().default(null),
@@ -49,7 +50,7 @@ export const taskUpdateSchema = z.object({
   title: z.string().trim().min(1, "is required").max(300).optional(),
   description: z.string().max(5000).optional(),
   goalId: z.string().nullable().optional(),
-  dueDate: date.optional(),
+  dueDate: date.nullable().optional(),
   startTime: time.optional(),
   endTime: time.optional(),
   eisenhower: eisenhowerSchema.optional(),
@@ -78,15 +79,33 @@ export const settingsSchema = z.object({
   youtubeUrl: z.string().max(500).optional(),
   alarmEnabled: z.boolean().optional(),
   reminderMinutes: z.number().int().min(-1).max(240).optional(),
+  customBreaks: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(40),
+        title: z.string().trim().min(1, "is required").max(120),
+        emoji: z.string().max(16).optional().default(""),
+        length: z.enum(["short", "long"]),
+      }),
+    )
+    .max(60)
+    .optional(),
 });
 
 export const focusActionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("start") }),
+  // taskId attaches that task first. A focus session can only start with a task attached.
+  z.object({ action: z.literal("start"), taskId: z.string().optional() }),
   z.object({ action: z.literal("pause") }),
   z.object({ action: z.literal("reset") }),
   z.object({ action: z.literal("skip") }),
   z.object({ action: z.literal("mode"), mode: z.enum(["work", "shortBreak", "longBreak"]) }),
   z.object({ action: z.literal("attach"), taskId: z.string().nullable() }),
+  // After a finished focus session: start the chosen break with a reward.
+  z.object({
+    action: z.literal("break"),
+    mode: z.enum(["shortBreak", "longBreak"]),
+    activity: z.string().trim().max(160).nullable().optional(),
+  }),
 ]);
 
 // Legacy localStorage export from the original HTML version.

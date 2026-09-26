@@ -35,9 +35,10 @@ tasksRouter.post("/", async (req, res) => {
   const tz = requestTimeZone(req, user.timezone);
   const body = taskCreateSchema.parse(req.body);
   const today = todayInTz(tz);
-  const dueDate = body.dueDate ?? today;
+  // Omitted = today; null = the goal's queue, scheduled later.
+  const dueDate = body.dueDate === undefined ? today : body.dueDate;
 
-  assertSchedulable(tz, dueDate, body.startTime);
+  if (dueDate) assertSchedulable(tz, dueDate, body.startTime);
   await assertGoalOwned(user.id, body.goalId);
 
   const task = await prisma.$transaction(async (tx) => {
@@ -75,7 +76,7 @@ tasksRouter.get("/:id", async (req, res) => {
   res.json({ task: toTaskDTO(task) });
 });
 
-/** PATCH /api/tasks/:id — edit fields, complete/reopen (XP), make priority. */
+/** PATCH /api/tasks/:id — edit fields, schedule / unschedule (dueDate null), complete/reopen (XP), make priority. */
 tasksRouter.patch("/:id", async (req, res) => {
   const user = currentUser(req);
   const tz = requestTimeZone(req, user.timezone);
@@ -83,12 +84,12 @@ tasksRouter.patch("/:id", async (req, res) => {
   const existing = await findOwnedTask(user.id, id);
   const body = taskUpdateSchema.parse(req.body);
 
-  const dueDate = body.dueDate ?? existing.dueDate;
+  const dueDate = body.dueDate !== undefined ? body.dueDate : existing.dueDate;
   const startTime = body.startTime !== undefined ? body.startTime : existing.startTime;
   const scheduleChanged =
     (body.dueDate !== undefined && body.dueDate !== existing.dueDate) ||
     (body.startTime !== undefined && body.startTime !== existing.startTime);
-  if (scheduleChanged) assertSchedulable(tz, dueDate, startTime);
+  if (scheduleChanged && dueDate) assertSchedulable(tz, dueDate, startTime);
   if (body.goalId !== undefined) await assertGoalOwned(user.id, body.goalId);
 
   const result = await prisma.$transaction(async (tx) => {

@@ -3,17 +3,19 @@
 // The timer is stored as "mode + absolute end time", so every device (web tab,
 // phone, widget) shows the same countdown. When a phase ends, whichever request
 // arrives first advances it; the `version` column makes that exactly-once.
+//
+// Phases do not run into each other: a finished focus session unlocks a break
+// that waits (paused) until the user picks a reward, and a finished break waits
+// at the next focus session. Focus only starts with a task attached.
 
 import type { FocusState, Prisma, User } from "@prisma/client";
 import { todayInTz, XP_REWARDS } from "../shared/logic.js";
 import type { FocusMode, XpEvent } from "../shared/types.js";
 import { prisma } from "./db.js";
 import { awardXp, markStreak } from "./gamify.js";
+import { badRequest } from "./http.js";
 
 type Settings = Pick<User, "pomoWork" | "pomoShortBreak" | "pomoLongBreak" | "pomoLongInterval">;
-
-/** If a device was away this long, stop replaying phases and park the timer. */
-const MAX_REPLAYED_PHASES = 12;
 
 export function phaseSeconds(mode: FocusMode | string, s: Settings) {
   if (mode === "shortBreak") return s.pomoShortBreak * 60;
@@ -33,7 +35,7 @@ export async function getFocusState(user: User) {
   });
 }
 
-/** Advances any phases that have ended. Returns the current state and XP events it produced. */
+/** Ends a phase whose time is up. Returns the current state and XP events it produced. */
 export async function reconcileFocus(
   user: User,
   timeZone: string,
@@ -42,26 +44,15 @@ export async function reconcileFocus(
   const f = await getFocusState(user);
   if (!f.running || !f.endsAt || f.endsAt.getTime() > now) return { state: f, events: [] };
 
-  let mode = f.mode as FocusMode;
-  let endsAt = f.endsAt.getTime();
-  let sessionCount = f.sessionCount;
-  const completedWorkDates: string[] = [];
-  let replayed = 0;
-
-  while (endsAt <= now && replayed < MAX_REPLAYED_PHASES) {
-    if (mode === "work") {
-      sessionCount++;
-      completedWorkDates.push(todayInTz(timeZone, new Date(endsAt)));
-      mode = sessionCount % user.pomoLongInterval === 0 ? "longBreak" : "shortBreak";
-    } else {
-      mode = "work";
-    }
-    endsAt += phaseSeconds(mode, user) * 1000;
-    replayed++;
-  }
-
-  const parked = endsAt <= now; // away for too long: stop at the start of the next phase
+  const finishedWork = f.mode === "work";
+  const sessionCount = finishedWork ? f.sessionCount + 1 : f.sessionCount;
+  const mode: FocusMode = !finishedWork
+    ? "work"
+    : sessionCount % user.pomoLongInterval === 0
+      ? "longBreak"
+      : "shortBreak";
   const total = phaseSeconds(mode, user);
+  const completedDate = todayInTz(timeZone, f.endsAt);
 
   return prisma.$transaction(async (tx) => {
     const claimed = await tx.focusState.updateMany({
@@ -69,24 +60,23 @@ export async function reconcileFocus(
       data: {
         mode,
         sessionCount,
-        running: !parked,
-        endsAt: parked ? null : new Date(endsAt),
-        secondsLeft: parked ? total : Math.ceil((endsAt - now) / 1000),
+        running: false,
+        endsAt: null,
+        secondsLeft: total,
         totalSeconds: total,
+        breakActivity: null,
         version: { increment: 1 },
       },
     });
     const events: XpEvent[] = [];
-    if (claimed.count === 1) {
+    if (claimed.count === 1 && finishedWork) {
       const task = f.attachedTaskId
         ? await tx.task.findFirst({ where: { id: f.attachedTaskId, userId: user.id } })
         : null;
-      for (const date of completedWorkDates) {
-        await logSession(tx, user.id, date, task?.id ?? null, user.pomoWork);
-        if (task) await tx.task.update({ where: { id: task.id }, data: { pomodoroCount: { increment: 1 } } });
-        events.push(await awardXp(tx, user.id, XP_REWARDS.focusSession, "Focus Session Complete"));
-        await markStreak(tx, user.id, date);
-      }
+      await logSession(tx, user.id, completedDate, task?.id ?? null, Math.round(f.totalSeconds / 60));
+      if (task) await tx.task.update({ where: { id: task.id }, data: { pomodoroCount: { increment: 1 } } });
+      events.push(await awardXp(tx, user.id, XP_REWARDS.focusSession, "Focus Session Complete"));
+      await markStreak(tx, user.id, completedDate);
     }
     // If another request won the race, its result is what we return.
     const state = await tx.focusState.findUniqueOrThrow({ where: { userId: user.id } });
@@ -113,22 +103,36 @@ async function logSession(
 }
 
 export type FocusAction =
-  | { action: "start" }
+  | { action: "start"; taskId?: string }
   | { action: "pause" }
   | { action: "reset" }
   | { action: "skip" }
   | { action: "mode"; mode: FocusMode }
-  | { action: "attach"; taskId: string | null };
+  | { action: "attach"; taskId: string | null }
+  | { action: "break"; mode: "shortBreak" | "longBreak"; activity?: string | null };
+
+const BREAK_LOCKED = "Finish your focus session first — breaks unlock when it ends";
 
 /** Applies a user action to the (already reconciled) timer. */
 export async function applyFocusAction(user: User, f: FocusState, a: FocusAction, now = Date.now()) {
   const data: Partial<FocusState> = {};
+  const toWork = () => {
+    data.mode = "work";
+    data.running = false;
+    data.endsAt = null;
+    data.breakActivity = null;
+    data.secondsLeft = data.totalSeconds = user.pomoWork * 60;
+  };
   switch (a.action) {
-    case "start":
+    case "start": {
       if (f.running) return f;
+      const taskId = a.taskId ?? f.attachedTaskId;
+      if (f.mode === "work" && !taskId) throw badRequest("Choose a task to focus on first");
+      if (a.taskId) data.attachedTaskId = a.taskId;
       data.running = true;
       data.endsAt = new Date(now + Math.max(1, f.secondsLeft) * 1000);
       break;
+    }
     case "pause":
       if (!f.running || !f.endsAt) return f;
       data.running = false;
@@ -136,29 +140,36 @@ export async function applyFocusAction(user: User, f: FocusState, a: FocusAction
       data.endsAt = null;
       break;
     case "reset":
-      data.running = false;
-      data.endsAt = null;
-      data.mode = "work";
+      toWork();
       data.sessionCount = 0;
-      data.secondsLeft = data.totalSeconds = user.pomoWork * 60;
       break;
-    case "skip": {
-      // Jump to the next phase without logging a session.
-      const next: FocusMode =
-        f.mode !== "work" ? "work" : (f.sessionCount + 1) % user.pomoLongInterval === 0 ? "longBreak" : "shortBreak";
-      const secs = phaseSeconds(next, user);
-      data.mode = next;
-      data.secondsLeft = data.totalSeconds = secs;
-      data.endsAt = f.running ? new Date(now + secs * 1000) : null;
+    case "skip":
+      // Only a break can be skipped; it goes back to a paused focus session.
+      if (f.mode === "work") throw badRequest(BREAK_LOCKED);
+      toWork();
+      break;
+    case "mode": {
+      if (a.mode === "work") {
+        toWork();
+        break;
+      }
+      // Switching between short and long break is fine once a break is unlocked.
+      if (f.mode === "work") throw badRequest(BREAK_LOCKED);
+      if (f.running) return f;
+      data.mode = a.mode;
+      data.secondsLeft = data.totalSeconds = phaseSeconds(a.mode, user);
       break;
     }
-    case "mode": {
-      // Jump straight to a phase (e.g. take a break now). Paused, full length, like a fresh timer.
-      const secs = phaseSeconds(a.mode, user);
+    case "break": {
+      if (f.mode === "work") throw badRequest(BREAK_LOCKED);
+      data.breakActivity = a.activity?.trim() || null;
+      if (f.running) break; // already on the break: just change the reward
+      const secs = f.mode === a.mode ? Math.max(1, f.secondsLeft) : phaseSeconds(a.mode, user);
       data.mode = a.mode;
-      data.running = false;
-      data.endsAt = null;
-      data.secondsLeft = data.totalSeconds = secs;
+      data.running = true;
+      data.totalSeconds = f.mode === a.mode ? f.totalSeconds : secs;
+      data.secondsLeft = secs;
+      data.endsAt = new Date(now + secs * 1000);
       break;
     }
     case "attach":

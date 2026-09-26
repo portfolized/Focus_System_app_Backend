@@ -81,10 +81,22 @@ check("add subtask", addSub.status === 201 && addSub.data.task.subtasks.length =
 const delSub = await call("DELETE", `/api/tasks/${a.data.task.id}/subtasks/${subId}`, undefined, T);
 check("delete subtask", delSub.data.task.subtasks.length === 1);
 
+const q = await call("POST", "/api/tasks", { title: "Queued idea", goalId, dueDate: null }, T);
+check("create queued task (no date)", q.status === 201 && q.data.task.dueDate === null, JSON.stringify(q.data));
+const qs = await call("PATCH", `/api/tasks/${q.data.task.id}`, { dueDate: localDate(2) }, T);
+check("schedule queued task", qs.data.task.dueDate === localDate(2));
+const qb = await call("PATCH", `/api/tasks/${q.data.task.id}`, { dueDate: null }, T);
+check("move task back to queue", qb.status === 200 && qb.data.task.dueDate === null);
+check("queued task not in date range", !(await call("GET", `/api/tasks?from=${localDate()}&to=${localDate(5)}`, undefined, T)).data.tasks.some((t) => t.id === q.data.task.id));
+const qd = await call("PATCH", `/api/tasks/${q.data.task.id}`, { completed: true }, T);
+check("complete queued task", qd.data.task.completed && !!qd.data.task.completedAt && qd.data.events?.[0]?.amount === 20);
+await call("PATCH", `/api/tasks/${q.data.task.id}`, { completed: false }, T);
+
 const edit = await call("PATCH", `/api/tasks/${a.data.task.id}`, { title: "Task A (edited)", description: "notes", eisenhower: "do-first" }, T);
 check("edit task", edit.data.task.title === "Task A (edited)" && edit.data.task.eisenhower === "do-first");
 const range = await call("GET", `/api/tasks?from=${localDate(1)}&to=${localDate(1)}`, undefined, T);
 check("tasks date range filter", range.data.tasks.length === 1 && range.data.tasks[0].title === "Task B");
+await call("DELETE", `/api/tasks/${q.data.task.id}`, undefined, T);
 
 // ---- ownership isolation ----
 const other = await call("POST", "/api/auth/register", { name: "Other", email: "o_" + email, password });
@@ -103,31 +115,42 @@ const bAfter = await call("GET", `/api/tasks/${b.data.task.id}`, undefined, T);
 check("deleting goal uncategorizes its tasks", bAfter.data.task.goalId === null);
 
 // ---- focus timer ----
-let f = await call("POST", "/api/focus", { action: "attach", taskId: a.data.task.id }, T);
-check("attach task to timer", f.data.focus.attachedTaskId === a.data.task.id);
-f = await call("POST", "/api/focus", { action: "start" }, T);
-check("start timer", f.data.focus.running && f.data.focus.endsAt > Date.now() + 24 * 60 * 1000);
+check("start without a task is refused", (await call("POST", "/api/focus", { action: "start" }, T)).status === 400);
+check("break locked while focusing", (await call("POST", "/api/focus", { action: "break", mode: "shortBreak", activity: "x" }, T)).status === 400);
+check("cannot jump to a break", (await call("POST", "/api/focus", { action: "mode", mode: "longBreak" }, T)).status === 400);
+check("cannot skip focus", (await call("POST", "/api/focus", { action: "skip" }, T)).status === 400);
+let f = await call("POST", "/api/focus", { action: "start", taskId: a.data.task.id }, T);
+check("start with a task attaches it", f.data.focus.running && f.data.focus.attachedTaskId === a.data.task.id && f.data.focus.endsAt > Date.now() + 24 * 60 * 1000);
 f = await call("POST", "/api/focus", { action: "pause" }, T);
 check("pause timer keeps remaining", !f.data.focus.running && f.data.focus.secondsLeft > 1490);
 f = await call("POST", "/api/focus", { action: "start" }, T);
+check("resume uses the attached task", f.data.focus.running);
 // Simulate the work phase having ended 3 seconds ago (as if the device was closed).
 const userId = boot.data.user.id;
 await prisma.focusState.update({ where: { userId }, data: { endsAt: new Date(Date.now() - 3000) } });
 const [r1, r2] = await Promise.all([call("GET", "/api/focus", undefined, T), call("GET", "/api/focus", undefined, T)]);
 const xpEvents = [...(r1.data.events ?? []), ...(r2.data.events ?? [])];
-check("finished session advances to short break", r1.data.focus.mode === "shortBreak" && r1.data.focus.running && r1.data.focus.sessionCount === 1);
+check("finished session unlocks a short break that waits", r1.data.focus.mode === "shortBreak" && !r1.data.focus.running && r1.data.focus.secondsLeft === 300 && r1.data.focus.sessionCount === 1, JSON.stringify(r1.data.focus));
 check("concurrent reconcile awards XP exactly once", xpEvents.length === 1 && xpEvents[0].amount === 25, JSON.stringify(xpEvents));
 const boot2 = await call("GET", "/api/bootstrap", undefined, T);
 const log = boot2.data.pomoLogs.find((l) => l.taskId === a.data.task.id);
 check("session logged against task", log?.sessions === 1 && log.minutes === 25);
 check("task pomodoroCount incremented", boot2.data.tasks.find((t) => t.id === a.data.task.id).pomodoroCount === 1);
 check("streak recorded today", boot2.data.streakDays.includes(localDate()));
-f = await call("POST", "/api/focus", { action: "skip" }, T);
-check("skip break -> work", f.data.focus.mode === "work" && f.data.focus.sessionCount === 1);
 f = await call("POST", "/api/focus", { action: "mode", mode: "longBreak" }, T);
-check("switch to long break", f.data.focus.mode === "longBreak" && !f.data.focus.running && f.data.focus.secondsLeft === 900);
-f = await call("POST", "/api/focus", { action: "mode", mode: "shortBreak" }, T);
-check("switch to short break", f.data.focus.mode === "shortBreak" && f.data.focus.totalSeconds === 300);
+check("swap to long break once unlocked", f.data.focus.mode === "longBreak" && !f.data.focus.running && f.data.focus.secondsLeft === 900);
+f = await call("POST", "/api/focus", { action: "break", mode: "shortBreak", activity: "💃 One-song dance party" }, T);
+check("start break with a reward", f.data.focus.mode === "shortBreak" && f.data.focus.running && f.data.focus.breakActivity === "💃 One-song dance party" && f.data.focus.totalSeconds === 300);
+f = await call("POST", "/api/focus", { action: "break", mode: "shortBreak", activity: "🐶 Pet time" }, T);
+check("change reward keeps the running break", f.data.focus.running && f.data.focus.breakActivity === "🐶 Pet time");
+await prisma.focusState.update({ where: { userId }, data: { endsAt: new Date(Date.now() - 1000) } });
+f = await call("GET", "/api/focus", undefined, T);
+check("finished break waits at focus", f.data.focus.mode === "work" && !f.data.focus.running && f.data.focus.breakActivity === null && (f.data.events ?? []).length === 0);
+f = await call("POST", "/api/focus", { action: "start" }, T);
+f = await call("POST", "/api/focus", { action: "reset" }, T);
+await prisma.focusState.update({ where: { userId }, data: { mode: "shortBreak", secondsLeft: 300, totalSeconds: 300 } });
+f = await call("POST", "/api/focus", { action: "skip" }, T);
+check("skip break -> paused focus", f.data.focus.mode === "work" && !f.data.focus.running);
 check("invalid mode rejected", (await call("POST", "/api/focus", { action: "mode", mode: "nap" }, T)).status === 400);
 f = await call("POST", "/api/focus", { action: "reset" }, T);
 check("reset timer", f.data.focus.mode === "work" && !f.data.focus.running && f.data.focus.sessionCount === 0);
@@ -136,6 +159,10 @@ check("reset timer", f.data.focus.mode === "work" && !f.data.focus.running && f.
 const s = await call("PATCH", "/api/settings", { pomoWork: 50, alarmEnabled: false, reminderMinutes: 15 }, T);
 check("update settings", s.data.user.settings.pomoWork === 50 && s.data.user.settings.alarmEnabled === false);
 check("paused timer adopts new work length", s.data.focus.secondsLeft === 3000 && s.data.focus.totalSeconds === 3000);
+check("new users get a 1-minute task alarm", boot.data.user.settings.reminderMinutes === 1 && Array.isArray(boot.data.user.settings.customBreaks));
+const cb = await call("PATCH", "/api/settings", { customBreaks: [{ id: "a1", title: "Mango lassi", emoji: "🥭", length: "short" }] }, T);
+check("save custom breaks", cb.data.user.settings.customBreaks?.[0]?.title === "Mango lassi", JSON.stringify(cb.data));
+check("invalid custom break rejected", (await call("PATCH", "/api/settings", { customBreaks: [{ id: "a", title: "", length: "short" }] }, T)).status === 400);
 check("invalid youtube link rejected", (await call("PATCH", "/api/settings", { youtubeUrl: "https://example.com" }, T)).status === 400);
 check("valid youtube link saved", (await call("PATCH", "/api/settings", { youtubeUrl: "https://youtu.be/jfKfPfyJRdk" }, T)).status === 200);
 

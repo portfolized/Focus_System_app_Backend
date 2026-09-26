@@ -1,5 +1,6 @@
 import type { FocusState, Goal, PomoLog, Subtask, Task, User } from "@prisma/client";
 import type {
+  BreakIdea,
   Eisenhower,
   FocusDTO,
   FocusMode,
@@ -56,8 +57,26 @@ export function toUserDTO(u: User): UserDTO {
       youtubeUrl: u.youtubeUrl,
       alarmEnabled: u.alarmEnabled,
       reminderMinutes: u.reminderMinutes,
+      customBreaks: toBreakIdeas(u.customBreaks),
     },
   };
+}
+
+/** The JSON column is only written through settingsSchema, but stay defensive. */
+function toBreakIdeas(v: unknown): BreakIdea[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((b) =>
+    b && typeof b === "object" && typeof b.id === "string" && typeof b.title === "string"
+      ? [
+          {
+            id: b.id,
+            title: b.title,
+            emoji: typeof b.emoji === "string" ? b.emoji : "",
+            length: b.length === "long" ? ("long" as const) : ("short" as const),
+          },
+        ]
+      : [],
+  );
 }
 
 export function toPomoLogDTO(l: PomoLog): PomoLogDTO {
@@ -74,6 +93,7 @@ export function toFocusDTO(f: FocusState, now = Date.now()): FocusDTO {
     totalSeconds: f.totalSeconds,
     sessionCount: f.sessionCount,
     attachedTaskId: f.attachedTaskId,
+    breakActivity: f.breakActivity,
     version: f.version,
   };
 }

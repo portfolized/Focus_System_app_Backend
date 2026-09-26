@@ -30,8 +30,10 @@ model User {
   // Focus audio
   youtubeUrl       String  @default("")
   alarmEnabled     Boolean @default(true)
-  // Minutes before a task's start time to send a reminder (mobile). -1 = off
-  reminderMinutes  Int     @default(10)
+  // Minutes before a task's start time to ring the alarm (mobile). -1 = off
+  reminderMinutes  Int     @default(1)
+  // User-made break rewards: [{ id, title, emoji, length: "short" | "long" }]
+  customBreaks     Json    @default("[]")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -67,7 +69,7 @@ model Task {
   description   String    @default("")
   completed     Boolean   @default(false)
   completedAt   DateTime?
-  dueDate       String // YYYY-MM-DD in the user's local calendar
+  dueDate       String? // YYYY-MM-DD in the user's local calendar; null = in the goal's queue (not scheduled yet)
   startTime     String? // HH:mm
   endTime       String? // HH:mm
   eisenhower    String? // do-first | schedule | delegate | eliminate
@@ -130,6 +132,8 @@ model FocusState {
   totalSeconds   Int       @default(1500)
   sessionCount   Int       @default(0)
   attachedTaskId String?
+  // The reward picked for the current break (breaks only start after a finished focus session).
+  breakActivity  String?
   version        Int       @default(0)
   updatedAt      DateTime  @updatedAt
 

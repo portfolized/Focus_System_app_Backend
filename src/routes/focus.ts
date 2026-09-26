@@ -30,17 +30,22 @@ focusRouter.get("/", async (req, res) => {
   res.json({ focus: toFocusDTO(state), events, serverTime: Date.now() });
 });
 
-/** POST /api/focus { action: start | pause | reset | skip } or { action: attach, taskId } */
+/**
+ * POST /api/focus { action: start [taskId] | pause | reset | skip }, { action: attach, taskId },
+ * { action: mode, mode } or { action: break, mode, activity }.
+ */
 focusRouter.post("/", async (req, res) => {
   const user = currentUser(req);
   const action = focusActionSchema.parse(req.body);
-  if (action.action === "attach" && action.taskId) await findOwnedTask(user.id, action.taskId);
+  if ((action.action === "attach" || action.action === "start") && action.taskId) {
+    await findOwnedTask(user.id, action.taskId);
+  }
   const { state, events } = await reconcileFocus(user, requestTimeZone(req, user.timezone));
   const next = await applyFocusAction(user, state, action);
   res.json({ focus: toFocusDTO(next), events, serverTime: Date.now() });
 });
 
-/** PATCH /api/settings — timer lengths, YouTube link, alarm, reminder lead time. */
+/** PATCH /api/settings — timer lengths, YouTube link, alarm, reminder lead time, custom breaks. */
 export const settingsRouter = Router();
 settingsRouter.patch("/", requireAuth, async (req, res) => {
   const user = currentUser(req);
